@@ -1,4 +1,4 @@
-
+# claude-profiles
 Run several Claude accounts side by side on macOS (personal, work, clients), in Claude Desktop and Claude Code, from the terminal or the menu bar.
 
 ## Build and install
