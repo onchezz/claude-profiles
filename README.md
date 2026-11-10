@@ -26,7 +26,13 @@ Click the person icon in the menu bar:
 - **Manage profiles.** Add an account, rename, remove (data folders optional), repair a launcher, and switch how a copy updates. Settings also has `doctor --fix`, opens to doctor, extensions and the full add wizard, and an Open at login toggle.
 
 Everything the app does is a call to `claude-profiles app …`, which prints JSON and never prompts. The app has no logic of its own.
-![Uploading image.png…](Menu bar)
+<p align="center">
+  <img
+    src="https://github.com/user-attachments/assets/5fb69e09-9e12-4d93-a5ff-283ff6e2dfa9"
+    width="450"
+    alt="Claude Profiles menu bar app"
+  />
+</p>
 
 
 ## The command
