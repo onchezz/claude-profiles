@@ -47,6 +47,7 @@ use crate::util::{file_exists, is_mac, path_string, read_json, run_output, run_q
 /// command line (on macOS with the environment after it, as `ps -E` prints).
 struct Proc {
     pid: i32,
+    ppid: i32,
     rss_kb: u64,
     cpu: f64,
     comm: String,
@@ -60,10 +61,14 @@ struct Proc {
 
 impl Proc {
     /// Claude Code, as its own binary or (on Windows, where a renamed
-    /// process title does not show) as node running its package.
+    /// process title does not show) as node running its package. Exact on
+    /// Unix: Claude Desktop's own process is "Claude".
     fn is_claude_code(&self) -> bool {
-        let comm = self.comm.to_lowercase();
-        comm == "claude" || comm == "claude.exe" || (comm.starts_with("node") && self.command.contains("@anthropic-ai/claude-code"))
+        if cfg!(windows) {
+            let comm = self.comm.to_lowercase();
+            return comm == "claude" || comm == "claude.exe" || (comm.starts_with("node") && self.command.contains("@anthropic-ai/claude-code"));
+        }
+        self.comm == "claude"
     }
 }
 
@@ -90,6 +95,7 @@ fn processes() -> Vec<Proc> {
             });
             Proc {
                 pid: p.pid().as_u32() as i32,
+                ppid: p.parent().map(|pp| pp.as_u32() as i32).unwrap_or(0),
                 rss_kb: p.memory() / 1024,
                 cpu: p.cpu_usage() as f64,
                 comm: p.name().to_string_lossy().trim_end_matches(".EXE").to_string(),
@@ -107,18 +113,19 @@ fn processes() -> Vec<Proc> {
     // `comm` is the bare executable name; `command` with -E carries the
     // environment, which is how a session's CLAUDE_CONFIG_DIR is found. Both
     // are only visible for the user's own processes, which is all we want.
-    let out = run_output("/bin/ps", ["-axwwE", "-o", "pid=,rss=,%cpu=,etime=,ucomm=,command="]).unwrap_or_default();
+    let out = run_output("/bin/ps", ["-axwwE", "-o", "pid=,ppid=,rss=,%cpu=,etime=,ucomm=,command="]).unwrap_or_default();
     out.lines()
         .filter_map(|l| {
             let mut f = l.split_whitespace();
             let pid = f.next()?.parse().ok()?;
+            let ppid = f.next()?.parse().unwrap_or(0);
             let rss_kb = f.next()?.parse().unwrap_or(0);
             let cpu = f.next()?.parse().unwrap_or(0.0);
             let elapsed = f.next()?.to_string();
             let comm = f.next()?.to_string();
             let command = f.collect::<Vec<_>>().join(" ");
             let config_dir = env_value(&command, "CLAUDE_CONFIG_DIR");
-            Some(Proc { pid, rss_kb, cpu, comm, command, elapsed, config_dir, cwd: None })
+            Some(Proc { pid, ppid, rss_kb, cpu, comm, command, elapsed, config_dir, cwd: None })
         })
         .collect()
 }
@@ -158,12 +165,28 @@ fn cwd_of(pid: i32) -> Option<String> {
     out.lines().find_map(|l| l.strip_prefix('n')).map(String::from)
 }
 
+/// Whether a Claude Code process was started by another one: Claude Code
+/// runs its bundled tools (its search, for one) under its own name, so they
+/// show as "claude" too, but they are part of the session above them.
+fn inside_another_session(p: &Proc, by_pid: &HashMap<i32, &Proc>) -> bool {
+    let mut pid = p.ppid;
+    for _ in 0..12 {
+        let Some(parent) = by_pid.get(&pid) else { return false };
+        if parent.is_claude_code() {
+            return true;
+        }
+        pid = parent.ppid;
+    }
+    false
+}
+
 /// Claude Code sessions, grouped by the config folder they run with (the
 /// default ~/.claude when none is set).
 fn sessions(procs: &[Proc]) -> HashMap<PathBuf, Vec<Value>> {
     let default = default_claude_config_dir();
+    let by_pid: HashMap<i32, &Proc> = procs.iter().map(|p| (p.pid, p)).collect();
     let mut out: HashMap<PathBuf, Vec<Value>> = HashMap::new();
-    for p in procs.iter().filter(|p| p.is_claude_code()) {
+    for p in procs.iter().filter(|p| p.is_claude_code() && !inside_another_session(p, &by_pid)) {
         let dir = p.config_dir.as_deref().map(PathBuf::from).unwrap_or_else(|| default.clone());
         // Sessions Claude Desktop starts for its Code tab live under its app
         // folders; say so, since stopping one affects the app.
@@ -193,6 +216,13 @@ fn bundle_usage(procs: &[Proc], bundle: &Path) -> (u64, f64, Vec<(i32, String)>)
         }
     }
     (mem / 1024, cpu, mains)
+}
+
+/// Split one folder's sessions into those you started (in a terminal) and
+/// those Claude Desktop started for its own Code features, which belong to
+/// the app, not to the CLI.
+fn split_sessions(list: Vec<Value>) -> (Vec<Value>, Vec<Value>) {
+    list.into_iter().partition(|s| s["fromDesktop"] != true)
 }
 
 /// Who a Claude Code config folder is signed in as, from its .claude.json.
@@ -298,12 +328,14 @@ fn state() -> Result<Value> {
             })
         });
         let code = p.code.as_ref().map(|c| {
+            let (cli, from_desktop) = split_sessions(sess.remove(&c.config_dir).unwrap_or_default());
             json!({
                 "configDir": c.config_dir,
                 "alias": c.alias_name,
                 "ghConfigDir": c.gh_config_dir,
                 "account": code_accounts.get(&p.name),
-                "sessions": sess.remove(&c.config_dir).unwrap_or_default(),
+                "sessions": cli,
+                "desktopSessions": from_desktop,
             })
         });
         profiles.push(json!({
@@ -317,12 +349,16 @@ fn state() -> Result<Value> {
 
     let default_desktop_data = default_desktop_data_dir();
     let default_usage = installed.as_deref().map(|a| bundle_usage(&procs, a));
-    let default_sessions = sess.remove(&default_claude_config_dir()).unwrap_or_default();
+    let (default_sessions, default_desktop_sessions) = split_sessions(sess.remove(&default_claude_config_dir()).unwrap_or_default());
     // Sessions on a config folder no profile owns (set by hand, or a profile
     // that has since been removed).
     let other: Vec<Value> = sess
         .into_iter()
-        .map(|(dir, list)| json!({ "configDir": dir, "sessions": list }))
+        .map(|(dir, list)| {
+            let (cli, from_desktop) = split_sessions(list);
+            json!({ "configDir": dir, "sessions": cli, "desktopSessions": from_desktop })
+        })
+        .filter(|o| o["sessions"].as_array().is_some_and(|a| !a.is_empty()) || o["desktopSessions"].as_array().is_some_and(|a| !a.is_empty()))
         .collect();
 
     Ok(json!({
@@ -353,6 +389,7 @@ fn state() -> Result<Value> {
                 "configDir": default_claude_config_dir(),
                 "account": default_code_account,
                 "sessions": default_sessions,
+                "desktopSessions": default_desktop_sessions,
             },
         },
         "otherSessions": other,
@@ -621,8 +658,25 @@ fn code_usage(config_dir: &Path) -> Value {
                     json!({ "percent": v.get("utilization"), "resetsAt": v.get("resets_at") })
                 })
             };
+            // Every limit the account has, with model-scoped ones (such as a
+            // weekly allowance for one model) named by the model.
+            let limits: Vec<Value> = u
+                .get("limits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|l| {
+                    json!({
+                        "kind": l.get("kind"),
+                        "percent": l.get("percent"),
+                        "resetsAt": l.get("resets_at"),
+                        "model": l.pointer("/scope/model/display_name"),
+                    })
+                })
+                .collect();
             json!({
                 "status": "ok",
+                "limits": limits,
                 "fiveHour": limit("five_hour"),
                 "sevenDay": limit("seven_day"),
                 "sevenDayOpus": limit("seven_day_opus"),

@@ -1,11 +1,10 @@
 // The window's look, in one place: icons, the button family, chips and
 // colours. Everything else builds from these, so the panel stays consistent.
 //
-// Buttons come in four kinds, each with one job:
+// Buttons come in three kinds, each with one job:
 //   action   soft-filled, icon + label: the things you do to an account
 //   quiet    no fill until hovered: secondary row actions (Open, Show, Quit)
 //   icon     square, icon only, with a tooltip: copy, refresh, settings, ⋯
-//   pill     full width, rounded: the one call to action at the bottom
 // plus danger tints of action and icon for things that end something.
 
 use std::borrow::Cow;
@@ -158,16 +157,6 @@ pub fn danger_icon(id: impl Into<ElementId>, icon_name: &str, tip: &str, cx: &Ap
         .tooltip(tip.to_string())
         .rounded(ButtonRounded::Size(px(6.)))
         .custom(soft(cx, red(), 1.0))
-}
-
-/// The one call to action: full width and round.
-pub fn pill(id: impl Into<ElementId>, icon_name: &str, label: &str, cx: &App) -> Button {
-    Button::new(id)
-        .icon(icon(icon_name))
-        .label(label.to_string())
-        .w_full()
-        .rounded(ButtonRounded::Size(px(999.)))
-        .custom(soft(cx, cx.theme().foreground, 1.1))
 }
 
 /// A dialog's confirming button.

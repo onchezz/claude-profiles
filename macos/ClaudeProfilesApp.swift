@@ -65,6 +65,8 @@ struct CodeHalf: Codable, Hashable {
     var ghConfigDir: String?
     var account: Account?
     var sessions: [Session]
+    /// Started by Claude Desktop for its Code features, not by you.
+    var desktopSessions: [Session]?
 }
 
 struct ProfileState: Codable, Hashable, Identifiable {
@@ -92,6 +94,7 @@ struct DefaultCode: Codable, Hashable {
     var configDir: String
     var account: Account?
     var sessions: [Session]
+    var desktopSessions: [Session]?
 }
 
 struct Defaults: Codable, Hashable { var desktop: DefaultDesktop?; var code: DefaultCode }
@@ -124,8 +127,12 @@ struct ImportCandidate: Codable, Hashable, Identifiable {
 struct Importable: Codable { var candidates: [ImportCandidate] }
 
 struct UsageLimit: Codable { var percent: Double?; var resetsAt: String? }
+/// One limit as the command itemises it: "session", "weekly_all", or one
+/// scoped to a model (such as a weekly allowance for one model).
+struct LimitItem: Codable { var kind: String?; var percent: Double?; var resetsAt: String?; var model: String? }
 struct Usage: Codable {
     var status: String
+    var limits: [LimitItem]?
     var fiveHour: UsageLimit?
     var sevenDay: UsageLimit?
     var sevenDayOpus: UsageLimit?
@@ -430,10 +437,25 @@ struct UsageBars: View {
             switch u.status {
             case "ok":
                 VStack(alignment: .leading, spacing: 3) {
-                    if let l = u.fiveHour { bar("5 hours", l) }
-                    if let l = u.sevenDay { bar("Week", l) }
-                    if let l = u.sevenDayOpus { bar("Opus week", l) }
-                    if let l = u.sevenDaySonnet { bar("Sonnet week", l) }
+                    if let items = u.limits, !items.isEmpty {
+                        ForEach(Array(items.enumerated()), id: \.offset) { _, l in
+                            bar(label(l), UsageLimit(percent: l.percent, resetsAt: l.resetsAt))
+                        }
+                    } else {
+                        if let l = u.fiveHour { bar("5 hours", l) }
+                        if let l = u.sevenDay { bar("Week", l) }
+                        if let l = u.sevenDayOpus { bar("Opus week", l) }
+                        if let l = u.sevenDaySonnet { bar("Sonnet week", l) }
+                    }
+                    // Limit resets and extra usage are offered on claude.ai,
+                    // for the account signed in there.
+                    Button {
+                        NSWorkspace.shared.open(URL(string: "https://claude.ai/settings/usage")!)
+                    } label: {
+                        Label("Limit resets and extra usage on claude.ai", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.link)
+                    .font(.system(size: 10))
                 }
             case "expired":
                 note("Usage shows after its next Claude Code session refreshes the sign-in.")
@@ -451,6 +473,15 @@ struct UsageBars: View {
         }
     }
 
+    func label(_ l: LimitItem) -> String {
+        switch (l.kind, l.model) {
+        case ("session", _): return "5 hours"
+        case ("weekly_all", _): return "Week"
+        case (_, let model?): return "\(model) week"
+        default: return (l.kind ?? "Limit").replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
     func bar(_ label: String, _ l: UsageLimit) -> some View {
         let pct = max(0, min(100, l.percent ?? 0))
         let tint: Color = pct >= 90 ? .red : pct >= 70 ? .orange : .accentColor
@@ -458,7 +489,7 @@ struct UsageBars: View {
             Text(label).foregroundStyle(.secondary).frame(width: 72, alignment: .leading)
             ProgressView(value: pct, total: 100).tint(tint)
             Text("\(Int(pct.rounded()))%").monospacedDigit().frame(width: 34, alignment: .trailing)
-            Text(resets(l.resetsAt)).foregroundStyle(.secondary).frame(width: 82, alignment: .leading)
+            Text(resets(l.resetsAt)).foregroundStyle(.secondary).lineLimit(1).fixedSize()
         }
         .font(.system(size: 10))
     }
@@ -473,7 +504,7 @@ struct UsageBars: View {
         parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         guard let date = parser.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else { return "" }
         let f = DateFormatter()
-        f.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "EEE HH:mm"
+        f.dateFormat = Calendar.current.isDateInToday(date) ? "h:mm a" : "EEE h:mm a"
         return "resets " + f.string(from: date)
     }
 }
@@ -866,13 +897,19 @@ struct ProfileCard: View {
             // Stats on their own line: beside the buttons they squeeze the
             // account name and wrap.
             let sessions = merged ? (profile.code?.sessions.count ?? 0) : 0
-            if d.clone.running || sessions > 0 {
+            let fromApp = profile.code?.desktopSessions?.count ?? 0
+            if d.clone.running || sessions > 0 || fromApp > 0 {
                 HStack(spacing: 6) {
                     if d.clone.running {
                         Text("App \(memory(d.clone.memoryMB)) · \(String(format: "%.0f", d.clone.cpu))% CPU")
                             .font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                     if sessions > 0 { Badge(text: "\(sessions) CLI running", tint: .green) }
+                    if fromApp > 0 {
+                        Text("· \(fromApp) Code session\(fromApp == 1 ? "" : "s") in the app")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                            .help("Claude Code sessions that Claude Desktop runs for its Code tab and tasks. You did not start them in a terminal.")
+                    }
                 }
             }
             if !d.clone.wrongAccountPids.isEmpty {
@@ -1444,6 +1481,11 @@ struct Panel: View {
             HStack {
                 Text("Claude Profiles").font(.title3.bold())
                 Spacer()
+                if let window = windowApp {
+                    IconButton(symbol: "macwindow", help: "Open the Claude Profiles window") {
+                        NSWorkspace.shared.openApplication(at: window, configuration: NSWorkspace.OpenConfiguration())
+                    }
+                }
                 IconButton(symbol: "arrow.clockwise", help: "Refresh") { store.refresh(); store.loadUsage() }
                 settingsMenu
             }
@@ -1506,6 +1548,13 @@ struct Panel: View {
                 ProgressView().frame(maxWidth: .infinity)
             }
         }
+    }
+
+    /// The window app this panel ships inside (Claude Profiles.app/Contents/
+    /// Helpers/), when it runs as that helper rather than on its own.
+    var windowApp: URL? {
+        let outer = Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return outer.pathExtension == "app" && Bundle.main.bundleURL.deletingLastPathComponent().lastPathComponent == "Helpers" ? outer : nil
     }
 
     func runningCount(_ s: State) -> Int {

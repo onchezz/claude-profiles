@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/icon.png" width="128" alt="Claude Profiles icon" />
+</p>
+
 # claude-profiles
 Run several Claude accounts side by side (personal, work, clients): Claude Code on macOS, Linux and Windows, and Claude Desktop on macOS. Use it from the terminal, the macOS menu bar, or a desktop window that runs on all three.
 
@@ -7,7 +11,7 @@ Run several Claude accounts side by side (personal, work, clients): Claude Code 
 # The command
 cargo install --path .
 
-# The menu bar app (bundles its own copy of the command)
+# The Mac app: the window plus the menu bar icon (bundles its own copy of the command)
 scripts/build-app.sh --install     # → ~/Applications/Claude Profiles.app
 ```
 
@@ -16,6 +20,8 @@ Needs Rust and the Xcode command line tools. The app is signed ad hoc, for this 
 ## The desktop window (macOS, Linux, Windows)
 
 `gui/` is the same panel as the menu bar app, built with [GPUI](https://gpui.rs) and [gpui-component](https://github.com/longbridge/gpui-component), so one codebase runs everywhere: the Accounts, Running and Files tabs, each account's App and CLI rows, plan usage, sessions, and adding, importing, renaming and removing accounts. Like the menu bar app, it holds no logic: every action is a `claude-profiles app …` call.
+
+Plan usage shows every limit your plan has, including a model's weekly allowance (such as Fable's), with reset times. Limit resets and extra usage are offered on claude.ai, for the account signed in there; the "Limit resets and extra usage on claude.ai" link opens that page.
 
 ```bash
 scripts/build-gui.sh             # → dist/claude-profiles-gui and dist/claude-profiles
@@ -40,6 +46,8 @@ What differs off macOS:
 - **The window** is blurred glass on macOS and Windows, and solid on Linux, where transparency without a compositor shows as black.
 
 ## The menu bar app
+
+Opening **Claude Profiles.app** starts both the window (below) and this menu bar icon; the panel's window button brings the window back. `MENUBAR=1 scripts/build-app.sh` builds the menu bar app on its own, as before.
 
 Click the person icon in the menu bar:
 
