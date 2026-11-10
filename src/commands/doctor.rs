@@ -156,18 +156,17 @@ fn suggest_reinstall(dir: &Path, pkg: &Value) {
 }
 
 fn check_bin_targets(dir: &Path, pkg: &Value, t: &mut Tally) -> (usize, usize) {
-    use std::os::unix::fs::PermissionsExt;
     let (mut problems, mut warnings) = (0, 0);
     let pkg_version = pkg.get("version").and_then(|v| v.as_str());
     for (cmd, target) in bin_targets_for(dir, pkg) {
         let rel = target.strip_prefix(dir).map(|r| r.display().to_string()).unwrap_or_else(|_| target.display().to_string());
-        let Ok(meta) = std::fs::metadata(&target) else {
+        if std::fs::metadata(&target).is_err() {
             err(format!("  \"{cmd}\" points at {rel}, which does not exist."));
             problems += 1;
             t.problems += 1;
             continue;
-        };
-        if meta.permissions().mode() & 0o111 == 0 {
+        }
+        if !crate::platform::is_executable(&target) {
             err(format!("  \"{cmd}\" ({rel}) is not executable."));
             info("    A shell that finds it will fail with `permission denied`.");
             problems += 1;

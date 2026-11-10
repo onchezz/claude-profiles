@@ -1,4 +1,4 @@
-// claude-profiles: run several Claude accounts side by side on macOS.
+// claude-profiles: run several Claude accounts side by side.
 //
 // A small argv dispatcher; there are a handful of commands and almost no
 // flags, so a match is clearer than a framework.
@@ -10,6 +10,7 @@ mod commands;
 mod desktop;
 mod launcher;
 mod permissions;
+mod platform;
 mod registry;
 mod shell;
 mod snapshot;
@@ -21,7 +22,7 @@ mod util;
 use crate::state::VERSION;
 use crate::ui::{command, err, info};
 
-const HELP: &str = "claude-profiles - run multiple Claude accounts side by side on macOS
+const HELP: &str = "claude-profiles - run multiple Claude accounts side by side
 
 USAGE
   claude-profiles <command> [options]

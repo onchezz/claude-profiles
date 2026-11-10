@@ -30,8 +30,12 @@ const STAMP_PREFIX: &str = "# updated ";
 
 // ---- Detection --------------------------------------------------------------------
 
-/// The user's shell, from $SHELL. zsh, the macOS default, when unsure.
+/// The user's shell, from $SHELL. zsh, the macOS default, when unsure. On
+/// Windows, PowerShell: pwsh (7+) when installed, else Windows PowerShell.
 pub fn detect_shell() -> String {
+    if cfg!(windows) {
+        return if crate::platform::which_all("pwsh").is_empty() { "powershell".into() } else { "pwsh".into() };
+    }
     let shell = std::env::var("SHELL").unwrap_or_default();
     for s in ["zsh", "bash", "fish"] {
         if shell.ends_with(&format!("/{s}")) {
@@ -48,7 +52,40 @@ pub fn rc_path_for_shell(shell: &str) -> PathBuf {
         // Terminal.app starts bash as a login shell, which reads .bash_profile.
         "bash" => h.join(".bash_profile"),
         "fish" => h.join(".config").join("fish").join("config.fish"),
+        // The all-hosts profile, so the command works in Windows Terminal,
+        // VS Code and the plain console alike.
+        "pwsh" => documents_dir().join("PowerShell").join("profile.ps1"),
+        "powershell" => documents_dir().join("WindowsPowerShell").join("profile.ps1"),
         _ => h.join(".profile"),
+    }
+}
+
+/// Where PowerShell looks for profiles: the Documents folder, which OneDrive
+/// often moves, so Windows is asked rather than assumed.
+fn documents_dir() -> PathBuf {
+    if cfg!(windows) {
+        let asked = crate::util::run_output(
+            "powershell",
+            ["-NoProfile", "-NonInteractive", "-Command", "[Environment]::GetFolderPath('MyDocuments')"],
+        );
+        if let Some(d) = asked.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            return PathBuf::from(d);
+        }
+    }
+    home().join("Documents")
+}
+
+pub fn is_powershell(shell: &str) -> bool {
+    shell == "pwsh" || shell == "powershell"
+}
+
+/// The command that reloads an rc file into the current shell.
+pub fn reload_command(rc: &Path) -> String {
+    let shown = crate::util::tildify(rc);
+    if cfg!(windows) {
+        format!(". '{}'", rc.to_string_lossy().replace('\'', "''"))
+    } else {
+        format!("source {shown}")
     }
 }
 
@@ -102,8 +139,10 @@ pub fn parse_managed_line(line: &str) -> Option<String> {
         let rest = rest.trim_start();
         let end = rest.find(|c: char| c.is_whitespace() || c == ';')?;
         let name = &rest[..end];
-        // The name must be followed (after optional spaces) by a semicolon.
-        if !rest[end..].trim_start().starts_with(';') || name.is_empty() {
+        // The name must be followed (after optional spaces) by a semicolon,
+        // or by a brace for PowerShell.
+        let next = rest[end..].trim_start();
+        if !(next.starts_with(';') || next.starts_with('{')) || name.is_empty() {
             return None;
         }
         name
@@ -209,6 +248,18 @@ pub fn build_alias_line(shell: &str, alias: &str, config_dir: &Path, gh_config_d
         out.push('"');
         out
     };
+    if is_powershell(shell) {
+        // Set for the one call and put back after, so the console keeps
+        // the account it had.
+        let q = |p: &Path| format!("'{}'", p.to_string_lossy().replace('\'', "''"));
+        let mut vars = vec![("CLAUDE_CONFIG_DIR", q(config_dir))];
+        if let Some(gh) = gh_config_dir {
+            vars.push(("GH_CONFIG_DIR", q(gh)));
+        }
+        let save: Vec<String> = vars.iter().enumerate().map(|(i, (k, v))| format!("$o{i} = $env:{k}; $env:{k} = {v}")).collect();
+        let restore: Vec<String> = vars.iter().enumerate().map(|(i, (k, _))| format!("$env:{k} = $o{i}")).collect();
+        return format!("function {alias} {{ {}; try {{ claude @args }} finally {{ {} }} }}", save.join("; "), restore.join("; "));
+    }
     let mut env = vec![format!("CLAUDE_CONFIG_DIR={}", quote(config_dir))];
     if let Some(gh) = gh_config_dir {
         env.push(format!("GH_CONFIG_DIR={}", quote(gh)));
@@ -287,7 +338,7 @@ pub struct SessionShell {
 /// The interactive shell this command was run from: usually the parent, but
 /// wrappers add a level or two, so walk up a bounded distance.
 pub fn find_session_shell() -> Option<SessionShell> {
-    let mut pid = unsafe { libc::getppid() };
+    let mut pid = crate::platform::parent_pid()?;
     for _ in 0..12 {
         if pid <= 1 {
             return None;
@@ -342,6 +393,17 @@ mod tests {
     }
 
     #[test]
+    fn alias_line_for_powershell_restores_the_environment() {
+        assert_eq!(
+            build_alias_line("pwsh", "claude-w", Path::new(r"C:\Users\it's\.claude-w"), None),
+            r"function claude-w { $o0 = $env:CLAUDE_CONFIG_DIR; $env:CLAUDE_CONFIG_DIR = 'C:\Users\it''s\.claude-w'; try { claude @args } finally { $env:CLAUDE_CONFIG_DIR = $o0 } }"
+        );
+        let line = build_alias_line("powershell", "claude-w", Path::new("/w"), Some(Path::new("/w/gh")));
+        assert!(line.contains("$o1 = $env:GH_CONFIG_DIR; $env:GH_CONFIG_DIR = '/w/gh'"));
+        assert!(line.ends_with("finally { $env:CLAUDE_CONFIG_DIR = $o0; $env:GH_CONFIG_DIR = $o1 } }"));
+    }
+
+    #[test]
     fn alias_line_for_fish_is_a_function() {
         assert_eq!(
             build_alias_line("fish", "claude-work", Path::new("/u/.claude-work"), None),
@@ -353,6 +415,10 @@ mod tests {
     fn managed_lines_are_read_for_both_shells() {
         assert_eq!(parse_managed_line("alias claude-a='x'").as_deref(), Some("claude-a"));
         assert_eq!(parse_managed_line("  function claude-b; X=1 claude $argv; end").as_deref(), Some("claude-b"));
+        assert_eq!(
+            parse_managed_line("function claude-c { $o0 = $env:X; try { claude @args } finally { } }").as_deref(),
+            Some("claude-c")
+        );
         assert_eq!(parse_managed_line("# alias nope='x'"), None);
         assert_eq!(parse_managed_line("aliasx='y'"), None);
         assert_eq!(parse_managed_line(""), None);

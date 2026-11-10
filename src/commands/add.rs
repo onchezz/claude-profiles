@@ -297,7 +297,7 @@ fn enable_gh_for_profile(profile: Profile) -> Result<()> {
     println!("  {}", command(format!("GH_CONFIG_DIR=\"{}\" gh auth login", path_string(&gh))));
     blank();
     info("Then reload your shell so the updated alias takes effect:");
-    println!("  {}", command(format!("source {}", tildify(&rc))));
+    println!("  {}", command(crate::shell::reload_command(&rc)));
     explain(
         "
         After that, every \"gh\" command Claude runs inside this profile uses that
@@ -415,7 +415,7 @@ fn link_existing(profile: Profile, missing: &[&str]) -> Result<()> {
     if let (Some(_), Some(c)) = (&code, &next.code) {
         blank();
         info("Activate the shell alias in this terminal:");
-        println!("  {}", command(format!("source {}", tildify(c.rc_path.as_deref().unwrap_or(Path::new("~/.zshrc"))))));
+        println!("  {}", command(crate::shell::reload_command(c.rc_path.as_deref().unwrap_or(&crate::shell::rc_path_for_shell(&crate::shell::detect_shell())))));
         blank();
         info("Then launch the profile's Claude Code with:");
         println!("  {}", command(&c.alias_name));
@@ -762,7 +762,7 @@ fn print_next_steps(name: &str, desktop_app: Option<&Path>, code: Option<&crate:
             ",
         );
         info("Reload your shell config:");
-        println!("  {}", command(format!("source {}", tildify(&c.rc_path))));
+        println!("  {}", command(crate::shell::reload_command(&c.rc_path)));
         blank();
         info("Then launch your new profile with:");
         println!("  {}", command(&c.alias_name));

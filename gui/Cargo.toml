@@ -1,0 +1,19 @@
+[package]
+name = "claude-profiles-gui"
+version = "0.2.0"
+edition = "2021"
+description = "Desktop window for claude-profiles: manage several Claude accounts on macOS, Linux and Windows."
+license = "MIT"
+rust-version = "1.95"
+
+[[bin]]
+name = "claude-profiles-gui"
+path = "src/main.rs"
+
+[dependencies]
+gpui = "0.2.2"
+gpui-component = "0.5.1"
+serde_json = "1"
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+

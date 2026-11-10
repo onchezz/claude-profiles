@@ -38,6 +38,17 @@ pub fn keychain_service(config_dir: &Path) -> String {
     format!("Claude Code-credentials-{}", &hex[..8])
 }
 
+/// A config folder's saved Claude Code sign-in, as the JSON Claude Code
+/// stores: in the Keychain on macOS, and in the folder's .credentials.json
+/// elsewhere.
+pub fn read_code_credentials(config_dir: &Path) -> Option<String> {
+    if crate::util::is_mac() {
+        let service = keychain_service(config_dir);
+        return crate::util::run_output("/usr/bin/security", ["find-generic-password", "-s", service.as_str(), "-w"]);
+    }
+    std::fs::read_to_string(config_dir.join(".credentials.json")).ok()
+}
+
 /// Move a Claude Code sign-in from one config folder's Keychain entry to
 /// another's, for a rename. The secret goes to `security` as hex on stdin, so
 /// it never shows in the process list, and the old entry is deleted only once
@@ -45,7 +56,8 @@ pub fn keychain_service(config_dir: &Path) -> String {
 pub fn move_keychain_login(from_dir: &Path, to_dir: &Path) -> bool {
     use std::io::Write;
     use std::process::{Command, Stdio};
-    if from_dir == default_claude_config_dir() || to_dir == default_claude_config_dir() {
+    // Elsewhere the sign-in is a file inside the folder, and moves with it.
+    if !crate::util::is_mac() || from_dir == default_claude_config_dir() || to_dir == default_claude_config_dir() {
         return false;
     }
     let (from, to) = (keychain_service(from_dir), keychain_service(to_dir));
@@ -81,7 +93,8 @@ pub fn move_keychain_login(from_dir: &Path, to_dir: &Path) -> bool {
 /// Delete a profile's saved Claude Code sign-in. Never the default
 /// account's: that one belongs to ~/.claude. Returns whether one was found.
 pub fn delete_keychain_login(config_dir: &Path) -> bool {
-    if config_dir == default_claude_config_dir() {
+    // Elsewhere the sign-in is a file inside the folder, and goes with it.
+    if !crate::util::is_mac() || config_dir == default_claude_config_dir() {
         return false;
     }
     let service = keychain_service(config_dir);
@@ -540,6 +553,7 @@ mod tests {
     }
 
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn fake_claude_home(root: &Path) -> (PathBuf, PathBuf) {
@@ -576,6 +590,7 @@ mod tests {
         assert_eq!(s.mcp_servers, 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn seeded_profile_and_copied_credentials_are_owner_only() {
         let root = tempfile::tempdir().unwrap();
@@ -592,6 +607,7 @@ mod tests {
         assert!(v.get("userID").is_none(), "nothing but mcpServers comes along");
     }
 
+    #[cfg(unix)]
     #[test]
     fn new_empty_profiles_are_private() {
         let root = tempfile::tempdir().unwrap();
@@ -636,6 +652,7 @@ mod tests {
         assert!(std::fs::read_to_string(src.join("settings.json")).unwrap().contains(&format!("{}/hooks/x.sh", src.display())));
     }
 
+    #[cfg(unix)]
     #[test]
     fn linked_settings_become_independent_copies() {
         let root = tempfile::tempdir().unwrap();
@@ -650,6 +667,7 @@ mod tests {
         assert!(std::fs::read_to_string(&shared).unwrap().contains(&src.display().to_string()), "the shared file is untouched");
     }
 
+    #[cfg(unix)]
     #[test]
     fn rebase_json_leaves_files_linked_out_alone() {
         let root = tempfile::tempdir().unwrap();

@@ -395,6 +395,7 @@ mod tests {
         assert!(audit.iter().any(|f| f.name == "a" && f.malformed));
     }
 
+    #[cfg(unix)]
     #[test]
     fn never_writes_through_a_link_out_but_allows_one_inside() {
         let root = tempfile::tempdir().unwrap();

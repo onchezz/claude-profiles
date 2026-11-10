@@ -302,7 +302,7 @@ pub fn run(all_args: &[String]) -> Result<()> {
     if let Some(c) = new_code.as_ref().filter(|_| signed_out) {
         blank();
         info("Reload your shell, then sign in again:");
-        println!("  {}", command(format!("source {}", tildify(c.rc_path.as_deref().unwrap_or(Path::new(""))))));
+        println!("  {}", command(crate::shell::reload_command(c.rc_path.as_deref().unwrap_or(Path::new("")))));
         println!("  {}", command(&c.alias_name));
         info("Run /login inside the REPL to re-authenticate this profile.");
     }

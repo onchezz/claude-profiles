@@ -11,25 +11,9 @@ use std::time::Duration;
 
 use crate::util::{file_exists, home};
 
-/// `which -a` output as an ordered list without duplicates. nvm shims often
-/// list the same path twice, which is noise rather than a conflict.
-pub fn parse_which_output(out: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut paths = Vec::new();
-    for line in out.lines() {
-        let p = line.trim();
-        if !p.is_empty() && seen.insert(p.to_string()) {
-            paths.push(p.to_string());
-        }
-    }
-    paths
-}
-
 /// Every copy of `cmd` on PATH, highest priority first.
 pub fn resolve_binaries(cmd: &str) -> Vec<String> {
-    crate::util::run_output("/usr/bin/which", ["-a", cmd])
-        .map(|o| parse_which_output(&o))
-        .unwrap_or_default()
+    crate::platform::which_all(cmd)
 }
 
 /// First line of `<bin> --version`, or None. Gives up after ten seconds so a
@@ -122,18 +106,5 @@ pub fn detect_defaults() -> Defaults {
     Defaults {
         desktop: find_claude_app().filter(|_| file_exists(&data)).map(|app| (app, data)),
         code: file_exists(&code).then_some(code),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn which_output_keeps_order_and_drops_duplicates_and_blanks() {
-        assert_eq!(
-            parse_which_output("/a/claude\n\n/b/claude\n/a/claude\n  \n"),
-            vec!["/a/claude", "/b/claude"]
-        );
     }
 }

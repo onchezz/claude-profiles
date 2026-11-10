@@ -257,6 +257,7 @@ fn copy_connectors_step(names: &[String], source: &Source, target: &Source, targ
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn refuses_an_extensions_folder_linked_out_of_the_profile() {
         let root = tempfile::tempdir().unwrap();

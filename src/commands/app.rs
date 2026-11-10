@@ -15,7 +15,7 @@
 //   repair NAME
 //   open-desktop NAME | open-default-desktop
 //   quit-desktop NAME             quit the profile's running copy of Claude
-//   open-cli NAME|default [--dir FOLDER] [--terminal Terminal|iTerm|Ghostty|Warp]
+//   open-cli NAME|default [--dir FOLDER] [--terminal T]  (T: one of state's "terminals")
 //   cli-command NAME|default      the shell command that starts that account
 //   stop-session PID              end one Claude Code session (SIGTERM)
 //   doctor-fix                    run doctor --fix, output on stderr
@@ -33,8 +33,9 @@ use super::add::{apply, is_unmanaged_existing_dir};
 use super::{reserved, without_claude_prefix};
 use crate::appclone::{app_version, clone_path_for, clone_state, has_custom_icon, CloneState, COLORS};
 use crate::claudebin::{default_claude_config_dir, default_desktop_data_dir, find_claude_app, resolve_claude};
-use crate::code::{keychain_service, default_alias_name_for, default_config_dir_for, default_user_config_file, has_gh_cli, CodeSetup};
-use crate::desktop::{default_app_path_for, default_data_dir_for, desktop_account_uuid, shell_quote, DesktopSetup};
+use crate::code::{read_code_credentials, default_alias_name_for, default_config_dir_for, default_user_config_file, has_gh_cli, CodeSetup};
+use crate::desktop::{default_app_path_for, default_data_dir_for, desktop_account_uuid, DesktopSetup};
+use crate::platform;
 use crate::launcher::{helper_state, install_helper, on_profile, HelperState};
 use crate::registry::{self, Profile};
 use crate::updates::{update_block_state, wants_update_block, BlockState};
@@ -42,8 +43,8 @@ use crate::util::{file_exists, is_mac, path_string, read_json, run_output, run_q
 
 // ---- Reading the machine ------------------------------------------------------------------
 
-/// One line of `ps`: pid, resident memory in KB, CPU percent, and the
-/// command line with the environment after it.
+/// One running process: pid, resident memory in KB, CPU percent, and the
+/// command line (on macOS with the environment after it, as `ps -E` prints).
 struct Proc {
     pid: i32,
     rss_kb: u64,
@@ -51,8 +52,57 @@ struct Proc {
     comm: String,
     command: String,
     elapsed: String,
+    /// CLAUDE_CONFIG_DIR from its environment, where it has one.
+    config_dir: Option<String>,
+    /// Its working folder, where the system gave it without asking again.
+    cwd: Option<String>,
 }
 
+impl Proc {
+    /// Claude Code, as its own binary or (on Windows, where a renamed
+    /// process title does not show) as node running its package.
+    fn is_claude_code(&self) -> bool {
+        let comm = self.comm.to_lowercase();
+        comm == "claude" || comm == "claude.exe" || (comm.starts_with("node") && self.command.contains("@anthropic-ai/claude-code"))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn processes() -> Vec<Proc> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let Ok(mut sys) = System::new() else { return Vec::new() };
+    let kind = ProcessRefreshKind::nothing()
+        .with_memory()
+        .with_cpu()
+        .with_cmd(UpdateKind::Always)
+        .with_environ(UpdateKind::Always)
+        .with_cwd(UpdateKind::Always);
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+    let elapsed = |secs: u64| {
+        let (d, h, m, s) = (secs / 86400, secs / 3600 % 24, secs / 60 % 60, secs % 60);
+        if d > 0 { format!("{d}-{h:02}:{m:02}:{s:02}") } else if h > 0 { format!("{h:02}:{m:02}:{s:02}") } else { format!("{m:02}:{s:02}") }
+    };
+    sys.processes()
+        .values()
+        .map(|p| {
+            let config_dir = p.environ().iter().find_map(|e| {
+                e.to_string_lossy().strip_prefix("CLAUDE_CONFIG_DIR=").filter(|v| !v.is_empty()).map(String::from)
+            });
+            Proc {
+                pid: p.pid().as_u32() as i32,
+                rss_kb: p.memory() / 1024,
+                cpu: p.cpu_usage() as f64,
+                comm: p.name().to_string_lossy().trim_end_matches(".EXE").to_string(),
+                command: p.cmd().iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" "),
+                elapsed: elapsed(p.run_time()),
+                config_dir,
+                cwd: p.cwd().map(path_string),
+            }
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
 fn processes() -> Vec<Proc> {
     // `comm` is the bare executable name; `command` with -E carries the
     // environment, which is how a session's CLAUDE_CONFIG_DIR is found. Both
@@ -67,12 +117,14 @@ fn processes() -> Vec<Proc> {
             let elapsed = f.next()?.to_string();
             let comm = f.next()?.to_string();
             let command = f.collect::<Vec<_>>().join(" ");
-            Some(Proc { pid, rss_kb, cpu, comm, command, elapsed })
+            let config_dir = env_value(&command, "CLAUDE_CONFIG_DIR");
+            Some(Proc { pid, rss_kb, cpu, comm, command, elapsed, config_dir, cwd: None })
         })
         .collect()
 }
 
 /// The value of `name` in a process's environment, as `ps -E` prints it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn env_value(command: &str, name: &str) -> Option<String> {
     let key = format!(" {name}=");
     let i = command.find(&key)? + key.len();
@@ -99,6 +151,9 @@ fn env_value(command: &str, name: &str) -> Option<String> {
 }
 
 fn cwd_of(pid: i32) -> Option<String> {
+    if !is_mac() {
+        return None;
+    }
     let out = run_output("/usr/sbin/lsof", ["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])?;
     out.lines().find_map(|l| l.strip_prefix('n')).map(String::from)
 }
@@ -108,14 +163,14 @@ fn cwd_of(pid: i32) -> Option<String> {
 fn sessions(procs: &[Proc]) -> HashMap<PathBuf, Vec<Value>> {
     let default = default_claude_config_dir();
     let mut out: HashMap<PathBuf, Vec<Value>> = HashMap::new();
-    for p in procs.iter().filter(|p| p.comm == "claude") {
-        let dir = env_value(&p.command, "CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| default.clone());
+    for p in procs.iter().filter(|p| p.is_claude_code()) {
+        let dir = p.config_dir.as_deref().map(PathBuf::from).unwrap_or_else(|| default.clone());
         // Sessions Claude Desktop starts for its Code tab live under its app
         // folders; say so, since stopping one affects the app.
         let from_desktop = p.command.contains("/Application Support/Claude") || p.command.contains("/claude-code/");
         out.entry(dir).or_default().push(json!({
             "pid": p.pid,
-            "cwd": cwd_of(p.pid),
+            "cwd": p.cwd.clone().or_else(|| cwd_of(p.pid)),
             "uptime": p.elapsed,
             "memoryMB": p.rss_kb / 1024,
             "cpu": p.cpu,
@@ -273,6 +328,8 @@ fn state() -> Result<Value> {
     Ok(json!({
         "version": crate::state::VERSION,
         "isMac": is_mac(),
+        "os": std::env::consts::OS,
+        "terminals": platform::terminals(),
         "helper": match helper_state() {
             HelperState::Current => "current",
             HelperState::Outdated => "outdated",
@@ -310,8 +367,20 @@ fn du_mb(p: &Path) -> Option<u64> {
     if !file_exists(p) {
         return None;
     }
+    if !is_mac() {
+        return Some(tree_bytes(p) / (1024 * 1024));
+    }
     let out = run_output("/usr/bin/du", [OsStr::new("-sk"), p.as_os_str()])?;
     out.split_whitespace().next()?.parse::<u64>().ok().map(|kb| kb / 1024)
+}
+
+/// The bytes under a folder, links not followed, for systems without `du -k`.
+fn tree_bytes(p: &Path) -> u64 {
+    let Ok(m) = std::fs::symlink_metadata(p) else { return 0 };
+    if !m.is_dir() {
+        return m.len();
+    }
+    std::fs::read_dir(p).map(|it| it.flatten().map(|e| tree_bytes(&e.path())).sum()).unwrap_or(0)
 }
 
 fn sizes() -> Value {
@@ -346,6 +415,9 @@ fn sizes() -> Value {
 /// Info.plist plus a link to the claude binary: there is no bundle signature
 /// for an added icon to break. Returns whether it changed anything.
 fn url_handler_icon() -> bool {
+    if !is_mac() {
+        return false;
+    }
     let handler = crate::util::home().join("Applications/Claude Code URL Handler.app");
     let plist = handler.join("Contents/Info.plist");
     if crate::appclone::plist_value(&handler, "CFBundleIdentifier").as_deref() != Some("com.anthropic.claude-code-url-handler") {
@@ -529,8 +601,7 @@ fn import(args: &[String]) -> Result<Value> {
 /// reported, never refreshed, since refreshing would rotate the sign-in out
 /// from under Claude Code.
 fn code_usage(config_dir: &Path) -> Value {
-    let service = keychain_service(config_dir);
-    let Some(raw) = run_output("/usr/bin/security", ["find-generic-password", "-s", service.as_str(), "-w"]) else {
+    let Some(raw) = read_code_credentials(config_dir) else {
         return json!({ "status": "signed-out" });
     };
     let Some(oauth) = serde_json::from_str::<Value>(raw.trim()).ok().and_then(|v| v.get("claudeAiOauth").cloned()) else {
@@ -567,7 +638,8 @@ fn code_usage(config_dir: &Path) -> Value {
 fn fetch_usage(token: &str) -> Option<Value> {
     use std::io::Write;
     use std::process::{Command, Stdio};
-    let mut child = Command::new("/usr/bin/curl")
+    let curl = if is_mac() { "/usr/bin/curl" } else { "curl" };
+    let mut child = Command::new(curl)
         .args(["-sf", "-m", "10", "-K", "-", "https://api.anthropic.com/api/oauth/usage"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -710,37 +782,17 @@ fn cli_command(target: &str) -> Result<String> {
     }
     let p = profile(target)?;
     let c = p.code.with_context(|| format!("\"{target}\" has no Claude Code half."))?;
-    let mut cmd = format!("CLAUDE_CONFIG_DIR={}", shell_quote(&path_string(&c.config_dir)));
-    if let Some(gh) = &c.gh_config_dir {
-        cmd += &format!(" GH_CONFIG_DIR={}", shell_quote(&path_string(gh)));
+    let config = path_string(&c.config_dir);
+    let gh = c.gh_config_dir.as_ref().map(path_string);
+    let mut vars = vec![("CLAUDE_CONFIG_DIR", config.as_str())];
+    if let Some(g) = &gh {
+        vars.push(("GH_CONFIG_DIR", g.as_str()));
     }
-    cmd += " claude";
-    Ok(cmd)
+    Ok(platform::with_env(&vars, "claude"))
 }
 
-/// Open a terminal window running `command`. The command arrives as an
-/// argument to a fixed AppleScript, never as part of the script.
 fn run_in_terminal(command: &str, app: &str) -> Result<()> {
-    let script = match app {
-        "iTerm" => "on run argv\n tell application \"iTerm\"\n activate\n create window with default profile command \"/bin/zsh -lic \" & quoted form of (item 1 of argv)\n end tell\nend run",
-        "Ghostty" | "Warp" => {
-            // Neither takes a command over AppleScript; hand them a .command file.
-            let dir = tempfile::Builder::new().prefix("claude-profiles-").tempdir()?.keep();
-            let file = dir.join("start.command");
-            std::fs::write(&file, format!("#!/bin/zsh -l\n{command}\n"))?;
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700))?;
-            if !run_quiet("/usr/bin/open", [OsStr::new("-a"), OsStr::new(app), file.as_os_str()]) {
-                bail!("Could not open {app}.");
-            }
-            return Ok(());
-        }
-        _ => "on run argv\n tell application \"Terminal\"\n activate\n do script (item 1 of argv)\n end tell\nend run",
-    };
-    if !run_quiet("/usr/bin/osascript", ["-e", script, command]) {
-        bail!("Could not open {app}. macOS may need permission for Claude Profiles to control it (System Settings > Privacy & Security > Automation).");
-    }
-    Ok(())
+    platform::run_in_terminal(command, app)
 }
 
 fn open_cli(args: &[String]) -> Result<Value> {
@@ -753,9 +805,9 @@ fn open_cli(args: &[String]) -> Result<Value> {
         if !Path::new(dir).is_dir() {
             bail!("{dir} is not a folder.");
         }
-        cmd = format!("cd {} && {cmd}", shell_quote(dir));
+        cmd = platform::in_dir(dir, &cmd);
     }
-    run_in_terminal(&cmd, value(args, "--terminal").unwrap_or("Terminal"))?;
+    run_in_terminal(&cmd, value(args, "--terminal").unwrap_or(platform::terminals()[0]))?;
     Ok(json!({ "command": cmd }))
 }
 
@@ -780,21 +832,18 @@ fn quit_desktop(name: &str) -> Result<Value> {
 fn stop_session(pid: &str) -> Result<Value> {
     let pid: i32 = pid.parse().context("not a process ID")?;
     // Only ever a Claude Code session of this user.
-    let is_session = processes().iter().any(|p| p.pid == pid && p.comm == "claude");
+    let is_session = processes().iter().any(|p| p.pid == pid && p.is_claude_code());
     if !is_session {
         bail!("Process {pid} is not a running Claude Code session.");
     }
-    if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+    if !platform::terminate(pid) {
         bail!("Could not stop process {pid}.");
     }
     Ok(json!({ "stopped": pid }))
 }
 
 fn open_path(p: &Path) -> Result<()> {
-    if !run_quiet("/usr/bin/open", [p.as_os_str()]) {
-        bail!("Could not open {}.", p.display());
-    }
-    Ok(())
+    platform::open_path(p)
 }
 
 pub fn run(args: &[String]) -> Result<()> {
@@ -940,8 +989,10 @@ pub fn run(args: &[String]) -> Result<()> {
                 bail!("\"{sub}\" cannot be opened in a terminal from here.");
             }
             let exe = std::env::current_exe()?;
-            let cmd = format!("{} {sub}", shell_quote(&path_string(&exe)));
-            run_in_terminal(&cmd, value(rest, "--terminal").unwrap_or("Terminal"))?;
+            // PowerShell needs `&` to run a quoted path.
+            let call = if cfg!(windows) { "& " } else { "" };
+            let cmd = format!("{call}{} {sub}", platform::quote(&path_string(&exe)));
+            run_in_terminal(&cmd, value(rest, "--terminal").unwrap_or(platform::terminals()[0]))?;
             json!({})
         }
         other => bail!("unknown app action \"{other}\""),

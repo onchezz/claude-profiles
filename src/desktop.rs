@@ -728,6 +728,7 @@ mod tests {
         assert_eq!(seed_desktop_mcp_servers(&data, &root.path().join("none.json"), None).status, SeedStatus::None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn connectors_only_and_unparseable_and_unsafe() {
         let root = tempfile::tempdir().unwrap();

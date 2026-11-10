@@ -141,5 +141,5 @@ pub fn report_stale_session(rc: &std::path::Path, started: Option<DateTime<Utc>>
         when(written.expect("stale implies known"))
     ));
     info("  The aliases above are correct in the file but not yet loaded here.");
-    info(format!("  Run {} or open a new terminal.", command(format!("source {}", tildify(rc)))));
+    info(format!("  Run {} or open a new terminal.", command(crate::shell::reload_command(rc))));
 }

@@ -91,7 +91,6 @@ pub enum Installed {
 /// target and renamed over it, so a launcher clicked mid-install runs either
 /// the old helper or the new one, never half of one.
 pub fn install_helper() -> Result<Installed> {
-    use std::os::unix::fs::PermissionsExt;
     let before = helper_state();
     if before == HelperState::Current {
         return Ok(Installed::Current);
@@ -102,7 +101,11 @@ pub fn install_helper() -> Result<Installed> {
     let exe = std::env::current_exe()?;
     let tmp = with_suffix(&dest, ".installing");
     std::fs::copy(&exe, &tmp)?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    }
     std::fs::rename(&tmp, &dest)?;
     Ok(if before == HelperState::Missing { Installed::Installed } else { Installed::Updated })
 }
@@ -369,7 +372,7 @@ pub fn on_profile(command: &str, data_dir: &str) -> bool {
 }
 
 fn alive(pid: i32) -> bool {
-    unsafe { libc::kill(pid, 0) == 0 }
+    crate::platform::pid_alive(pid)
 }
 
 /// Ask specific processes to quit the way Claude's own Quit menu would, then
@@ -473,6 +476,7 @@ pub fn run(argv: &[String]) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod tests {
     use super::*;
 

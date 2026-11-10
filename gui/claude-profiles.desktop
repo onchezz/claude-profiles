@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Profiles
+Comment=Run several Claude accounts side by side
+Exec=claude-profiles-gui
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=claude-profiles

@@ -1,5 +1,5 @@
 # claude-profiles
-Run several Claude accounts side by side on macOS (personal, work, clients), in Claude Desktop and Claude Code, from the terminal or the menu bar.
+Run several Claude accounts side by side (personal, work, clients): Claude Code on macOS, Linux and Windows, and Claude Desktop on macOS. Use it from the terminal, the macOS menu bar, or a desktop window that runs on all three.
 
 ## Build and install
 
@@ -13,6 +13,32 @@ scripts/build-app.sh --install     # → ~/Applications/Claude Profiles.app
 
 Needs Rust and the Xcode command line tools. The app is signed ad hoc, for this Mac only.
 
+## The desktop window (macOS, Linux, Windows)
+
+`gui/` is the same panel as the menu bar app, built with [GPUI](https://gpui.rs) and [gpui-component](https://github.com/longbridge/gpui-component), so one codebase runs everywhere: the Accounts, Running and Files tabs, each account's App and CLI rows, plan usage, sessions, and adding, importing, renaming and removing accounts. Like the menu bar app, it holds no logic: every action is a `claude-profiles app …` call.
+
+```bash
+scripts/build-gui.sh             # → dist/claude-profiles-gui and dist/claude-profiles
+scripts/build-gui.sh --install   # also copies both to ~/.local/bin (and adds a Linux menu entry)
+```
+
+On Windows, run `cargo build --release --workspace` and keep `claude-profiles.exe` beside `claude-profiles-gui.exe`. The window finds the command beside itself first, then on PATH (or set `CLAUDE_PROFILES_BIN`).
+
+Linux needs GPUI's libraries, for example on Debian or Ubuntu:
+
+```bash
+sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev \
+  libwayland-dev libvulkan-dev libfontconfig1-dev libfreetype6-dev libzstd-dev libasound2-dev
+```
+
+What differs off macOS:
+
+- **Claude Code profiles only.** Claude Desktop profiles still need macOS (their launchers are AppleScript apps).
+- **Sign-ins** live in each profile folder's `.credentials.json`, as Claude Code keeps them there, so they move with a rename and go with a removal.
+- **The command** is a PowerShell function in your PowerShell profile on Windows, and an alias in `.zshrc`, `.bashrc`/`.bash_profile` or fish's `config.fish` on Linux.
+- **Terminals**: on Windows, PowerShell or Windows Terminal; on Linux, your `$TERMINAL`, `x-terminal-emulator`, GNOME Terminal, Konsole, Kitty, Alacritty, WezTerm or xterm.
+- **The window** is blurred glass on macOS and Windows, and solid on Linux, where transparency without a compositor shows as black.
+
 ## The menu bar app
 
 Click the person icon in the menu bar:
@@ -24,7 +50,7 @@ Click the person icon in the menu bar:
 - **Versions and app copies.** It shows the installed Claude Desktop and Claude Code versions and each profile's copy, whether that copy is current, behind (it updates on its next open) or ahead, plus the copy's and data folder's disk use.
 - **Manage profiles.** Add an account, rename, remove (data folders optional), repair a launcher, and switch how a copy updates. Settings also has `doctor --fix`, opens to doctor, extensions and the full add wizard, and an Open at login toggle.
 
-Everything the app does is a call to `claude-profiles app …`, which prints JSON and never prompts. The app has no logic of its own.
+Everything the app does is a call to `claude-profiles app …`, which prints JSON and never prompts. The app has no logic of its own. CI builds and tests the command and the window on macOS, Linux and Windows (`.github/workflows/ci.yml`).
 <p align="center">
   <img
     src="https://github.com/user-attachments/assets/5fb69e09-9e12-4d93-a5ff-283ff6e2dfa9"
@@ -55,7 +81,7 @@ The same limits apply as in the original. Profiles are separated by configuratio
 ## Development
 
 ```bash
-cargo test            # 72 tests; some compile real launchers (macOS only)
+cargo test --workspace   # some tests compile real launchers (macOS only)
 ```
 
 Note: an unrelated tool also called `claude-profiles` keeps its data in `~/.claude-profiles`. This tool never uses that folder, and refuses the profile name `profiles`, which would collide with it.

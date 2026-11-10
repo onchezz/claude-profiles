@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux libraries GPUI needs
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev libwayland-dev libzstd-dev libasound2-dev \
+            libvulkan-dev libfontconfig1-dev libfreetype6-dev libssl-dev pkg-config
+      - run: cargo test --workspace
+      - run: cargo build --release --workspace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: claude-profiles-${{ runner.os }}
+          path: |
+            target/release/claude-profiles
+            target/release/claude-profiles-gui
+            target/release/claude-profiles.exe
+            target/release/claude-profiles-gui.exe

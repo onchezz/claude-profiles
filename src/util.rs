@@ -11,10 +11,12 @@ pub const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/
 // ---- Paths ------------------------------------------------------------------
 
 /// The home folder, read from $HOME each time so tests can point it elsewhere.
+/// Windows sets USERPROFILE instead; $HOME still wins there when set, as it
+/// does for Git Bash and MSYS.
 pub fn home() -> PathBuf {
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
+    let var = |k: &str| std::env::var_os(k).filter(|h| !h.is_empty()).map(PathBuf::from);
+    var("HOME")
+        .or_else(|| if cfg!(windows) { var("USERPROFILE") } else { None })
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
@@ -89,7 +91,14 @@ pub fn file_stays_within_dir(file: &Path, dir: &Path) -> bool {
     target.starts_with(&root) && target != root
 }
 
-/// Create a folder (and its parents) that only its owner can read.
+/// Create a folder (and its parents) that only its owner can read. On
+/// Windows a folder in the user's profile is already private to them.
+#[cfg(not(unix))]
+pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)
+}
+
+#[cfg(unix)]
 pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
@@ -98,6 +107,12 @@ pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 /// Write a file that only its owner can read.
+#[cfg(not(unix))]
+pub fn write_private_file(file: &Path, contents: &str) -> std::io::Result<()> {
+    std::fs::write(file, contents)
+}
+
+#[cfg(unix)]
 pub fn write_private_file(file: &Path, contents: &str) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -256,11 +271,48 @@ where
 
 /// APFS clone of a folder, falling back to a real copy on other filesystems.
 pub fn clone_copy(from: &Path, to: &Path) -> anyhow::Result<()> {
+    if !is_mac() {
+        return copy_tree(from, to);
+    }
     if run_quiet("/bin/cp", [OsStr::new("-Rc"), from.as_os_str(), to.as_os_str()]) {
         return Ok(());
     }
     let _ = remove_all(to);
     run_checked("/bin/cp", [OsStr::new("-R"), from.as_os_str(), to.as_os_str()])
+}
+
+/// A plain recursive copy, for systems without `cp -c`. Links are copied as
+/// links where the system allows it, so a copy never reaches outside `from`.
+fn copy_tree(from: &Path, to: &Path) -> anyhow::Result<()> {
+    let meta = std::fs::symlink_metadata(from)?;
+    if meta.file_type().is_symlink() {
+        let target = std::fs::read_link(from)?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, to)?;
+        #[cfg(windows)]
+        {
+            let made = if from.is_dir() {
+                std::os::windows::fs::symlink_dir(&target, to)
+            } else {
+                std::os::windows::fs::symlink_file(&target, to)
+            };
+            // Links need Developer Mode on Windows; copy what it points at instead.
+            if made.is_err() && from.exists() {
+                return copy_tree(&std::fs::canonicalize(from)?, to);
+            }
+        }
+        return Ok(());
+    }
+    if meta.is_dir() {
+        std::fs::create_dir_all(to)?;
+        for e in std::fs::read_dir(from)? {
+            let e = e?;
+            copy_tree(&e.path(), &to.join(e.file_name()))?;
+        }
+        return Ok(());
+    }
+    std::fs::copy(from, to)?;
+    Ok(())
 }
 
 pub fn is_mac() -> bool {
@@ -330,6 +382,7 @@ mod tests {
         assert_eq!(title_case("personal"), "Personal");
     }
 
+    #[cfg(unix)]
     #[test]
     fn files_inside_and_outside_a_folder() {
         let root = tempfile::tempdir().unwrap();

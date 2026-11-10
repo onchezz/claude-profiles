@@ -2,12 +2,15 @@
 name = "claude-profiles"
 version = "0.2.0"
 edition = "2021"
-description = "Run multiple Claude Desktop and Claude Code accounts side by side on macOS, fully isolated."
+description = "Run multiple Claude Code (and, on macOS, Claude Desktop) accounts side by side."
 license = "MIT"
 # Where `claude-profiles upgrade` installs from when no --git/--path is
 # given. Leave empty until this crate has a home; upgrade then asks for one.
 repository = "https://github.com/onchezz/claude-profiles"
-rust-version = "1.75"
+rust-version = "1.95"
+
+[workspace]
+members = [".", "gui"]
 
 [[bin]]
 name = "claude-profiles"
@@ -18,7 +21,6 @@ anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 console = "0.15"
 dialoguer = { version = "0.11", default-features = false }
-libc = "0.2"
 percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }
 # preserve_order keeps settings.json and friends in the order their owner
@@ -27,6 +29,13 @@ serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Process details (environment, folder, memory) where there is no `ps -E`.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
 [profile.release]
 lto = true
