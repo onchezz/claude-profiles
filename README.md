@@ -1,4 +1,3 @@
-<img width="999" height="1575" alt="image" src="https://github.com/user-attachments/assets/5fb69e09-9e12-4d93-a5ff-283ff6e2dfa9" /># claude-profiles
 
 Run several Claude accounts side by side on macOS (personal, work, clients), in Claude Desktop and Claude Code, from the terminal or the menu bar.
 
