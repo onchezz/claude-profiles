@@ -17,10 +17,11 @@ pub(crate) use serde_json::{json, Value};
 // Named, not globbed: gpui also has red() and green().
 pub(crate) use crate::design::{
     accent, action, card_bg, chip, confirm, danger_icon, dot, green, icon, icon_button, kind_tag, named, orange, quiet, red,
-    secondary, window_bg, Assets, GLASS,
+    secondary, warn_action, window_bg, Assets, GLASS,
 };
 
 pub(crate) use crate::app::*;
+pub(crate) use crate::cleanup::Cleanup;
 pub(crate) use crate::cli;
 pub(crate) use crate::format::*;
 pub(crate) use crate::id;

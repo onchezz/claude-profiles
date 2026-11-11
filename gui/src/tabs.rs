@@ -124,7 +124,7 @@ impl Profiles {
     }
 
     pub(crate) fn render_files(&self, s: &Value, cx: &mut Context<Self>) -> Vec<Div> {
-        let mut out = Vec::new();
+        let mut out = vec![self.render_cleanup_entry(cx)];
         if let Some(sz) = &self.sizes {
             // Everything but the Claude copies, which share their blocks with
             // Claude.app and take next to nothing.

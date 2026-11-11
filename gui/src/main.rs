@@ -12,9 +12,11 @@
 
 mod app;
 mod cards;
+mod cleanup;
 mod cli;
 mod design;
 mod format;
+mod history;
 mod prelude;
 mod screens;
 mod tabs;
@@ -48,7 +50,7 @@ fn main() {
         };
         cx.open_window(options, |window, cx| {
             Theme::sync_system_appearance(Some(window), cx);
-            let view = cx.new(Profiles::new);
+            let view = cx.new(|cx| Profiles::new(window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         })
         .expect("could not open the window");

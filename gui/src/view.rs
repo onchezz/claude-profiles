@@ -6,8 +6,20 @@ use crate::prelude::*;
 
 impl Render for Profiles {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let page = self.screen.as_ref().map(std::mem::discriminant);
+        if page != self.shown_screen {
+            self.screen_scroll.set_offset(point(px(0.), px(0.)));
+            self.shown_screen = page;
+        }
         let content: AnyElement = match &self.screen {
-            Some(_) => div().id("screen").flex_1().min_h_0().overflow_y_scroll().child(self.render_screen(cx)).into_any_element(),
+            Some(_) => div()
+                .id("screen")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(&self.screen_scroll)
+                .child(self.render_screen(cx))
+                .into_any_element(),
             None => self.render_main(cx).into_any_element(),
         };
         div()
@@ -68,6 +80,9 @@ impl Profiles {
                 this.refresh(cx);
                 this.call(Job::Usage, vec!["usage".into()], cx);
                 this.call(Job::Importable, vec!["importable".into()], cx);
+                if this.tab == Tab::Sessions {
+                    this.load_history(cx);
+                }
             })))
             .child(self.settings_menu(cx));
 
@@ -79,6 +94,9 @@ impl Profiles {
             });
         };
         main = main.child(self.render_versions(&state, cx)).child(self.render_tabs(cx));
+        if self.tab == Tab::Sessions {
+            main = main.child(self.render_history_head(cx));
+        }
 
         // Block layout, not a flex column: GPUI starts an overflowing flex column
         // part-way down. Cards space themselves with a bottom margin.
@@ -92,6 +110,7 @@ impl Profiles {
                 l
             }
             Tab::Running => list.children(self.render_running(&state, cx)),
+            Tab::Sessions => list.children(self.render_history(&state, cx)),
             Tab::Files => list.children(self.render_files(&state, cx)),
         };
         main = main.child(list);
@@ -139,7 +158,7 @@ impl Profiles {
         self.menu(icon_button("settings", "settings", "Settings", cx), entries, cx)
     }
 
-    pub(crate) fn render_versions(&self, s: &Value, cx: &App) -> Div {
+    pub(crate) fn render_versions(&self, s: &Value, cx: &mut Context<Self>) -> Div {
         let mut row = div().h_flex().gap_1p5();
         if let Some(v) = s["claude"]["desktopApp"]["version"].as_str() {
             row = row.child(chip(format!("Desktop {v}"), None, cx));
@@ -153,7 +172,15 @@ impl Profiles {
         });
         let has_desktop = s["profiles"].as_array().into_iter().flatten().any(|p| !p["desktop"].is_null());
         if s["helper"].as_str() != Some("current") && has_desktop {
-            row = row.child(chip("run doctor --fix", Some(orange()), cx));
+            // The launch helper is a build behind this one: one press brings
+            // it (and anything else doctor finds) up to date.
+            const DONE: &str = "Updated the launch helper…";
+            row = row.child(
+                warn_action("doctor-fix-now", "refresh-cw", "Update helper", cx)
+                    .tooltip("Your profiles' launchers run an older copy of claude-profiles. Runs doctor --fix to update it.")
+                    .loading(self.busy.iter().any(|b| b == DONE))
+                    .on_click(cx.listener(|this, _, _, cx| this.act(DONE, &["doctor-fix"], cx))),
+            );
         }
         row.child(div().flex_1()).child(secondary(format!("v{}", s["version"].as_str().unwrap_or("?")), cx))
     }
@@ -197,6 +224,7 @@ impl Profiles {
         let tabs = vec![
             (Tab::Accounts, "Accounts".to_string()),
             (Tab::Running, if running > 0 { format!("Running ({running})") } else { "Running".into() }),
+            (Tab::Sessions, "Sessions".to_string()),
             (Tab::Files, "Files".to_string()),
         ];
         self.segmented(
@@ -207,6 +235,9 @@ impl Profiles {
                 this.tab = tab;
                 if tab == Tab::Files {
                     this.load_sizes(cx);
+                }
+                if tab == Tab::Sessions {
+                    this.load_history(cx);
                 }
             },
             cx,

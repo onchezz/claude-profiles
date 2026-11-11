@@ -126,6 +126,24 @@ struct ImportCandidate: Codable, Hashable, Identifiable {
 }
 struct Importable: Codable { var candidates: [ImportCandidate] }
 
+/// A past Claude Code session, as `app sessions` lists it.
+struct PastSession: Codable, Hashable {
+    var id: String?
+    var appId: String?
+    var title: String?
+    var firstPrompt: String?
+    var lastPrompt: String?
+    var cwd: String?
+    var branch: String?
+    var lastActive: Int?
+    var archived: Bool?
+    var inApp: Bool?
+    var cliTarget: String?
+    var appTarget: String?
+}
+struct SessionAccount: Codable { var name: String; var canCli: Bool; var canApp: Bool; var sessions: [PastSession] }
+struct SessionList: Codable { var accounts: [SessionAccount] }
+
 struct UsageLimit: Codable { var percent: Double?; var resetsAt: String? }
 /// One limit as the command itemises it: "session", "weekly_all", or one
 /// scoped to a model (such as a weekly allowance for one model).
@@ -250,6 +268,11 @@ final class Store: ObservableObject {
     @Published var error: String?
     @Published var busy: String?
     @Published var notice: String?
+    /// The Sessions tab: every account's past sessions, and how they are filtered.
+    @Published var history: SessionList?
+    @Published var loadingHistory = false
+    @Published var historySearch = ""
+    @Published var historyAccount: String?
     @AppStorage("terminal") var terminal = Store.installedTerminal
 
     /// Until one is picked in Settings: the terminal app installed alongside
@@ -317,6 +340,20 @@ final class Store: ObservableObject {
                 var map = Dictionary(uniqueKeysWithValues: s.profiles.map { ($0.name, $0) })
                 if let d = s.default { map["default"] = d }
                 self.sizes = map
+            }
+        }
+    }
+
+    func loadHistory() {
+        guard !loadingHistory else { return }
+        loadingHistory = true
+        Task {
+            defer { self.loadingHistory = false }
+            do {
+                let data = try await CLI.run(["sessions"])
+                self.history = try JSONDecoder().decode(SessionList.self, from: data)
+            } catch {
+                self.error = error.localizedDescription
             }
         }
     }
@@ -1317,6 +1354,171 @@ struct RunningView: View {
     }
 }
 
+/// Search and the account filter, kept above the list so they stay in reach.
+struct SessionsBar: View {
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        HStack(spacing: 6) {
+            TextField("Search titles, prompts and folders", text: $store.historySearch)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+            Menu(store.historyAccount.map { $0 == "default" ? "Default" : $0 } ?? "All accounts") {
+                Button("All accounts") { store.historyAccount = nil }
+                ForEach(store.history?.accounts ?? [], id: \.name) { a in
+                    Button("\(a.name == "default" ? "Default" : a.name) (\(a.sessions.count))") { store.historyAccount = a.name }
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .font(.system(size: 11))
+            if store.loadingHistory { ProgressView().controlSize(.small) }
+        }
+    }
+}
+
+/// Every account's past sessions, by day and then by account, each
+/// resumable in a terminal or in that account's Claude Desktop.
+struct SessionsView: View {
+    @EnvironmentObject var store: Store
+    var state: State
+    @State private var shown = 40
+
+    struct Row: Hashable { var account: String; var s: PastSession }
+    struct Group: Hashable { var account: String; var rows: [Row] }
+    struct Day: Hashable { var title: String; var groups: [Group] }
+
+    var rows: [Row] {
+        let needle = store.historySearch.trimmingCharacters(in: .whitespaces).lowercased()
+        var out: [Row] = []
+        for a in store.history?.accounts ?? [] where store.historyAccount == nil || store.historyAccount == a.name {
+            for s in a.sessions where s.archived != true {
+                let hay = [s.title, s.firstPrompt, s.lastPrompt, s.cwd, s.branch].compactMap { $0?.lowercased() }
+                if needle.isEmpty || hay.contains(where: { $0.contains(needle) }) { out.append(Row(account: a.name, s: s)) }
+            }
+        }
+        return out.sorted { ($0.s.lastActive ?? 0) > ($1.s.lastActive ?? 0) }
+    }
+
+    var days: [Day] {
+        var out: [Day] = []
+        for r in rows.prefix(shown) {
+            let title = dayTitle(r.s.lastActive ?? 0)
+            if out.last?.title != title { out.append(Day(title: title, groups: [])) }
+            if let i = out[out.count - 1].groups.firstIndex(where: { $0.account == r.account }) {
+                out[out.count - 1].groups[i].rows.append(r)
+            } else {
+                out[out.count - 1].groups.append(Group(account: r.account, rows: [r]))
+            }
+        }
+        return out
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if store.history == nil {
+                Text(store.loadingHistory ? "Reading sessions…" : "").font(.system(size: 11)).foregroundStyle(.secondary)
+            } else {
+                let all = rows
+                Text("\(all.count) session\(all.count == 1 ? "" : "s")").font(.system(size: 11)).foregroundStyle(.secondary)
+                ForEach(days, id: \.self) { d in
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(d.title).font(.system(size: 12, weight: .semibold))
+                            ForEach(d.groups, id: \.self) { g in
+                                accountHeading(g.account, count: g.rows.count).padding(.top, 4)
+                                ForEach(g.rows, id: \.self) { r in row(r.s) }
+                            }
+                        }.padding(4).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                if all.count > shown {
+                    Button("Show more (\(all.count - shown) left)") { shown += 40 }
+                        .controlSize(.small).frame(maxWidth: .infinity)
+                }
+                if all.isEmpty {
+                    Text(store.historySearch.isEmpty ? "No sessions yet." : "Nothing matches.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    func accountHeading(_ name: String, count: Int) -> some View {
+        let profile = state.profiles.first { $0.name == name }
+        let who = name == "default" ? accountLabel(state.default.code.account) : accountLabel(profile?.code?.account)
+        return HStack(spacing: 5) {
+            Circle().fill(Color.named(profile?.desktop?.color)).frame(width: 8, height: 8)
+            Text(name == "default" ? "Default" : name).font(.system(size: 11, weight: .semibold))
+            if let who { Text(who).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1) }
+            Spacer()
+            Text("\(count)").font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+    }
+
+    func row(_ s: PastSession) -> some View {
+        let title = (s.title?.isEmpty == false ? s.title : nil) ?? "Untitled session"
+        let meta = [s.cwd.map { shortPath($0) }, s.branch].compactMap { $0 }.joined(separator: " · ")
+        let canCli = s.cliTarget != nil && s.id != nil
+        let appSession = s.appId ?? s.id
+        let canApp = s.appTarget != nil && appSession != nil
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                if s.inApp == true { KindTag(kind: s.id != nil ? .both : .app) }
+                Spacer(minLength: 4)
+                Text(ago(s.lastActive ?? 0)).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 4) {
+                Text(meta).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 4)
+                Button {
+                    guard let t = s.cliTarget, let id = s.id else { return }
+                    store.act("Opening \(store.terminal)…", ["resume-cli", t, id, "--terminal", store.terminal])
+                } label: { Label("Terminal", systemImage: "terminal") }
+                    .disabled(!canCli)
+                    .help(canCli ? "Resume in a terminal with this account's claude" : "This session has no terminal transcript to resume")
+                Button {
+                    guard let t = s.appTarget, let id = appSession else { return }
+                    store.act("Opening in Claude…", ["resume-app", t, id])
+                } label: { Label("App", systemImage: "macwindow") }
+                    .disabled(!canApp)
+                    .help(!canApp ? "No Claude Desktop runs on this session's account"
+                          : s.appId != nil ? "Continue in this account's Claude Desktop"
+                          : "Open in this account's Claude Desktop (adds it to its Code tab)")
+            }
+            .controlSize(.mini)
+            if let p = s.lastPrompt ?? s.firstPrompt, p != title {
+                Text("“\(p)”").font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+            }
+        }
+        .padding(.leading, 13)
+        .padding(.vertical, 2)
+    }
+
+    func ago(_ secs: Int) -> String {
+        let t = Date(timeIntervalSince1970: TimeInterval(secs))
+        let mins = Int(Date().timeIntervalSince(t) / 60)
+        if mins < 1 { return "just now" }
+        if mins < 60 { return "\(mins)m ago" }
+        if mins < 12 * 60 { return "\(mins / 60)h ago" }
+        let f = DateFormatter()
+        f.dateFormat = Calendar.current.dateComponents([.day], from: t, to: Date()).day ?? 99 < 7 ? "EEE HH:mm" : "MMM d"
+        return f.string(from: t)
+    }
+
+    func dayTitle(_ secs: Int) -> String {
+        let t = Date(timeIntervalSince1970: TimeInterval(secs))
+        let cal = Calendar.current
+        if cal.isDateInToday(t) { return "Today" }
+        if cal.isDateInYesterday(t) { return "Yesterday" }
+        let days = cal.dateComponents([.day], from: cal.startOfDay(for: t), to: cal.startOfDay(for: Date())).day ?? 99
+        let f = DateFormatter()
+        f.dateFormat = days < 7 ? "EEEE" : cal.isDate(t, equalTo: Date(), toGranularity: .year) ? "MMMM d" : "MMMM d, yyyy"
+        return f.string(from: t)
+    }
+}
+
 struct FilesView: View {
     @EnvironmentObject var store: Store
     var state: State
@@ -1440,7 +1642,7 @@ struct ImportView: View {
     }
 }
 
-enum Tab: String, CaseIterable { case accounts = "Accounts", running = "Running", files = "Files" }
+enum Tab: String, CaseIterable { case accounts = "Accounts", running = "Running", sessions = "Sessions", files = "Files" }
 
 enum Screen: Equatable {
     case importing
@@ -1486,7 +1688,10 @@ struct Panel: View {
                         NSWorkspace.shared.openApplication(at: window, configuration: NSWorkspace.OpenConfiguration())
                     }
                 }
-                IconButton(symbol: "arrow.clockwise", help: "Refresh") { store.refresh(); store.loadUsage() }
+                IconButton(symbol: "arrow.clockwise", help: "Refresh") {
+                    store.refresh(); store.loadUsage()
+                    if tab == .sessions { store.loadHistory() }
+                }
                 settingsMenu
             }
             if let s = store.state {
@@ -1498,7 +1703,11 @@ struct Panel: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .onChange(of: tab) { t in if t == .files { store.loadSizes() } }
+                .onChange(of: tab) { t in
+                    if t == .files { store.loadSizes() }
+                    if t == .sessions { store.loadHistory() }
+                }
+                if tab == .sessions { SessionsBar() }
                 ScrollViewReader { proxy in
                 ScrollView {
                     Group {
@@ -1513,6 +1722,7 @@ struct Panel: View {
                                 }
                             }
                         case .running: RunningView(state: s)
+                        case .sessions: SessionsView(state: s)
                         case .files: FilesView(state: s)
                         }
                     }
@@ -1575,7 +1785,21 @@ struct Panel: View {
                 Badge(text: "Code not on PATH", tint: .orange)
             }
             if s.helper != "current" && !s.profiles.filter({ $0.desktop != nil }).isEmpty {
-                Badge(text: "run doctor --fix", tint: .orange)
+                // One press brings the launch helper (and anything else
+                // doctor finds) up to date.
+                Button {
+                    store.act("Updating the launch helper…", ["doctor-fix"], done: "Launch helper updated")
+                } label: {
+                    Label("Update helper", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 10, weight: .medium))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.18), in: Capsule())
+                        .foregroundStyle(.orange)
+                        .fixedSize()
+                }
+                .buttonStyle(.plain)
+                .disabled(store.busy != nil)
+                .help("Your profiles' launchers run an older copy of claude-profiles. Runs doctor --fix to update it.")
             }
             Spacer()
             Text("v\(s.version)").font(.system(size: 10)).foregroundStyle(.tertiary)

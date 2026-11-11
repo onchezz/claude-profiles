@@ -25,7 +25,7 @@ const ICONS: &[(&str, &[u8])] = icons![
     "app-window", "arrow-down", "check", "chevron-down", "chevron-left", "chevron-right", "chevron-up",
     "circle-ellipsis", "circle-plus", "circle-stop", "circle-user", "circle-x", "close", "copy", "download",
     "ellipsis", "external-link", "eye", "folder", "link", "loader-circle", "log-in", "log-out", "minus",
-    "pencil", "plus", "power", "refresh-cw", "settings", "square-terminal", "triangle-alert", "x",
+    "pencil", "plus", "power", "refresh-cw", "search", "settings", "square-terminal", "trash", "triangle-alert", "x",
 ];
 
 /// The icons, compiled in, for GPUI and for gpui-component's own controls.
@@ -137,6 +137,16 @@ pub fn quiet(id: impl Into<ElementId>, label: &str, cx: &App) -> Button {
         .label(label.to_string())
         .rounded(ButtonRounded::Size(px(7.)))
         .custom(soft(cx, cx.theme().foreground, 0.8))
+}
+
+/// Something needs doing, and one press does it: tinted orange.
+pub fn warn_action(id: impl Into<ElementId>, icon_name: &str, label: &str, cx: &App) -> Button {
+    Button::new(id)
+        .xsmall()
+        .icon(icon(icon_name))
+        .label(label.to_string())
+        .rounded(ButtonRounded::Size(px(7.)))
+        .custom(soft(cx, orange(), 1.6))
 }
 
 /// Square, icon only, explained by its tooltip.

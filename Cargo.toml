@@ -29,6 +29,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
+# Cleanup moves to the Trash / Recycle Bin, never deletes outright.
+trash = "5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

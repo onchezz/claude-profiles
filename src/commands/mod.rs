@@ -1,5 +1,6 @@
 pub mod add;
 pub mod app;
+pub mod cleanup;
 pub mod doctor;
 pub mod extensions;
 pub mod list;
@@ -7,6 +8,7 @@ pub mod remove;
 pub mod rename;
 pub mod repair;
 pub mod selfupdate;
+pub mod sessions;
 pub mod status;
 pub mod upgrade;
 

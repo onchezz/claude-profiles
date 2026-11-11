@@ -146,6 +146,8 @@ impl Profiles {
                     ))
             }
             Some(Screen::Import) => self.render_import(cx),
+            Some(Screen::CleanupConfirm) => self.render_cleanup_confirm(cx),
+            Some(Screen::Cleanup) => self.screen_frame("Clean up".into(), cx).children(self.render_cleanup(cx)),
             Some(Screen::Confirm { title, text, button, danger, args, done }) => {
                 let (title, text, button, danger, args, done) = (title.clone(), text.clone(), button.clone(), *danger, args.clone(), done.clone());
                 self.screen_frame(title, cx).child(secondary(text, cx)).child(self.screen_buttons(

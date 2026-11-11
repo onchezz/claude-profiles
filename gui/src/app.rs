@@ -15,6 +15,9 @@ pub(crate) enum Job {
     Sizes,
     Importable,
     CopyCommand,
+    CleanupScan,
+    CleanupRun,
+    Sessions,
     /// A change, with what to say once it worked (empty: say nothing).
     Action(String),
 }
@@ -50,6 +53,7 @@ impl Settings {
 pub(crate) enum Tab {
     Accounts,
     Running,
+    Sessions,
     Files,
 }
 
@@ -61,6 +65,8 @@ pub(crate) enum Screen {
     NameAccount { uuid: String, name: Entity<InputState> },
     Import,
     Confirm { title: String, text: String, button: String, danger: bool, args: Vec<String>, done: String },
+    Cleanup,
+    CleanupConfirm,
 }
 
 // ---- Menus --------------------------------------------------------------------------------
@@ -81,6 +87,12 @@ pub(crate) fn item(label: impl Into<SharedString>, f: impl Fn(&mut Profiles, &mu
 // ---- The view -----------------------------------------------------------------------------
 
 pub(crate) struct Profiles {
+    /// The open page's scroll position, and which page it belongs to, so
+    /// each page opens at its top.
+    pub(crate) screen_scroll: ScrollHandle,
+    pub(crate) shown_screen: Option<std::mem::Discriminant<Screen>>,
+    pub(crate) cleanup: Cleanup,
+    pub(crate) history: crate::history::History,
     pub(crate) state: Option<Value>,
     pub(crate) usage: Option<Value>,
     pub(crate) sizes: Option<Value>,
@@ -102,7 +114,7 @@ pub(crate) struct Profiles {
 }
 
 impl Profiles {
-    pub(crate) fn new(cx: &mut Context<Self>) -> Profiles {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Profiles {
         let mut this = Profiles {
             state: None,
             usage: None,
@@ -122,6 +134,10 @@ impl Profiles {
             all_sessions: HashSet::new(),
             highlighted: None,
             scroll: ScrollHandle::new(),
+            cleanup: Cleanup::default(),
+            history: crate::history::History::new(window, cx),
+            screen_scroll: ScrollHandle::new(),
+            shown_screen: None,
         };
         this.call(Job::Action(String::new()), vec!["startup".into()], cx);
         this.refresh(cx);
@@ -209,6 +225,32 @@ impl Profiles {
                 self.last_usage = Some(Instant::now());
                 if let Ok(v) = result {
                     self.usage = Some(v);
+                }
+            }
+            Job::CleanupScan => {
+                self.cleanup.scanning = false;
+                match result {
+                    Ok(v) => self.cleanup.take_scan(v),
+                    Err(e) => self.notify(e, true),
+                }
+            }
+            Job::CleanupRun => {
+                self.cleanup.running = false;
+                match result {
+                    Ok(v) => {
+                        self.notify(format!("Freed {}", crate::cleanup::bytes(v["freedBytes"].as_u64().unwrap_or(0))), false);
+                        self.cleanup.last_result = Some(v);
+                        // What is left, measured afresh.
+                        self.scan_cleanup(cx);
+                    }
+                    Err(e) => self.notify(e, true),
+                }
+            }
+            Job::Sessions => {
+                self.history.loading = false;
+                match result {
+                    Ok(v) => self.history.list = Some(v),
+                    Err(e) => self.notify(e, true),
                 }
             }
             Job::Sizes => {
@@ -378,7 +420,12 @@ impl Profiles {
     }
 
     pub(crate) fn back(&mut self, cx: &mut Context<Self>) {
-        self.screen = None;
+        // The cleanup confirmation returns to the cleanup page; everything
+        // else to the tabs.
+        self.screen = match self.screen {
+            Some(Screen::CleanupConfirm) => Some(Screen::Cleanup),
+            _ => None,
+        };
         cx.notify();
     }
 }

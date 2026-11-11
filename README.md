@@ -37,6 +37,20 @@ sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-de
   libwayland-dev libvulkan-dev libfontconfig1-dev libfreetype6-dev libzstd-dev libasound2-dev
 ```
 
+### Cleaning up disk space
+
+The window's **Files** tab can scan the whole computer, not just Claude, for space that comes back on its own: Claude Desktop caches and old Claude Code copies, app caches, logs, Xcode, Gradle, Android and package-manager caches (npm, npx, Bun, pnpm, Yarn, Dart and Flutter's pub cache), Android emulators and system images, and build output in your project folders (`node_modules`, `.next`, Flutter's `build` and `.dart_tool`, Gradle `build`, CocoaPods `Pods`, Rust `target`, Python virtualenvs). If you tick them, it also lists old downloads and installers, and large files (500 MB and up) anywhere in your own folders. You choose what goes; it all moves to the Trash, so nothing is lost until you empty it.
+
+It is built to be safe rather than thorough:
+
+- Only regenerable things are listed. Documents, Photos, Mail, Messages, iCloud and cloud-storage folders, keychains, app containers, browser profiles, AI model stores (Ollama, Hugging Face, LM Studio) and Claude conversation histories never are, and Apple's own caches are left alone.
+- Anything in use, such as the cache of an open app, the running Claude Code, or a project that is building, is shown but cannot be chosen.
+- Safe items start ticked. Review items (downloads, large files, emulators, project build folders, pub caches, iOS device support) start unticked. Large files are your own files, not caches: they never come back once the Trash is emptied.
+- When you confirm, each path is checked again: offered by the last scan, still inside its area, not a link, not in use now. You get a count of what was freed, skipped and failed.
+- Homebrew, Xcode simulators, Docker, npm, pnpm and the Dart/Flutter pub cache are cleaned by their own tools (`brew cleanup`, `xcrun simctl delete unavailable`, `docker system prune`, `npm cache verify`, `pnpm store prune`, `flutter pub cache clean`), opened in your terminal.
+
+The same is available as `claude-profiles app cleanup-scan [--downloads] [--large]` and `app cleanup-run PATH...`.
+
 What differs off macOS:
 
 - **Claude Code profiles only.** Claude Desktop profiles still need macOS (their launchers are AppleScript apps).

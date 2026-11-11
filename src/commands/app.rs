@@ -18,7 +18,13 @@
 //   open-cli NAME|default [--dir FOLDER] [--terminal T]  (T: one of state's "terminals")
 //   cli-command NAME|default      the shell command that starts that account
 //   stop-session PID              end one Claude Code session (SIGTERM)
+//   sessions                      every account's past sessions (see sessions.rs)
+//   resume-cli NAME|default ID [--terminal T]
+//   resume-app NAME|default ID|local_ID   (macOS: in that account's Claude Desktop)
 //   doctor-fix                    run doctor --fix, output on stderr
+//   cleanup-scan [--downloads] [--large]  what can be cleaned up (see cleanup.rs)
+//   cleanup-run PATH...           move those to the Trash, checked again
+//   cleanup-tool brew|simctl|docker|pub|npm|pnpm [--terminal T]
 //   in-terminal doctor|add|extensions|status [--terminal T]
 //                                 run an interactive command in a terminal
 
@@ -45,13 +51,13 @@ use crate::util::{file_exists, is_mac, path_string, read_json, run_output, run_q
 
 /// One running process: pid, resident memory in KB, CPU percent, and the
 /// command line (on macOS with the environment after it, as `ps -E` prints).
-struct Proc {
-    pid: i32,
-    ppid: i32,
+pub(super) struct Proc {
+    pub(super) pid: i32,
+    pub(super) ppid: i32,
     rss_kb: u64,
     cpu: f64,
-    comm: String,
-    command: String,
+    pub(super) comm: String,
+    pub(super) command: String,
     elapsed: String,
     /// CLAUDE_CONFIG_DIR from its environment, where it has one.
     config_dir: Option<String>,
@@ -73,7 +79,7 @@ impl Proc {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn processes() -> Vec<Proc> {
+pub(super) fn processes() -> Vec<Proc> {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let Ok(mut sys) = System::new() else { return Vec::new() };
     let kind = ProcessRefreshKind::nothing()
@@ -109,7 +115,7 @@ fn processes() -> Vec<Proc> {
 }
 
 #[cfg(target_os = "macos")]
-fn processes() -> Vec<Proc> {
+pub(super) fn processes() -> Vec<Proc> {
     // `comm` is the bare executable name; `command` with -E carries the
     // environment, which is how a session's CLAUDE_CONFIG_DIR is found. Both
     // are only visible for the user's own processes, which is all we want.
@@ -996,6 +1002,10 @@ pub fn run(args: &[String]) -> Result<()> {
             json!({ "accountUuid": uuid, "name": name.trim() })
         }
         "import" => import(rest)?,
+        // Disk cleanup: see cleanup.rs for the rules it keeps.
+        "cleanup-scan" => super::cleanup::scan(flag(rest, "--downloads"), flag(rest, "--large"))?,
+        "cleanup-run" => super::cleanup::run(rest)?,
+        "cleanup-tool" => super::cleanup::run_tool(need(rest, 0, "tool")?, value(rest, "--terminal").unwrap_or(platform::terminals()[0]))?,
         "remove" => {
             let p = profile(need(rest, 0, "profile name")?)?;
             if let Some(d) = &p.desktop {
@@ -1036,6 +1046,14 @@ pub fn run(args: &[String]) -> Result<()> {
         "open-cli" => open_cli(rest)?,
         "cli-command" => json!({ "command": cli_command(need(rest, 0, "profile name")?)? }),
         "stop-session" => stop_session(need(rest, 0, "process ID")?)?,
+        "sessions" => super::sessions::list()?,
+        "resume-cli" => {
+            let target = need(rest, 0, "profile name")?;
+            let command = cli_command(target)?;
+            let terminal = value(rest, "--terminal").unwrap_or(platform::terminals()[0]);
+            super::sessions::resume_cli(target, need(rest, 1, "session ID")?, &command, terminal)?
+        }
+        "resume-app" => super::sessions::resume_app(need(rest, 0, "profile name")?, need(rest, 1, "session ID")?)?,
         "in-terminal" => {
             // Only these: the interactive commands the panel has no form for.
             let sub = need(rest, 0, "command")?;
